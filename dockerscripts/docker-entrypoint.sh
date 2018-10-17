@@ -40,4 +40,50 @@ docker_secrets_env() {
 ## Set access env from secrets if necessary.
 docker_secrets_env
 
-exec "$@"
+#exec /usr/bin/start.sh "$@"
+
+shutdown () {
+    echo Shutting down
+    test -s /var/run/minio.pid && kill -TERM $(cat /var/run/minio.pid)
+}
+trap shutdown TERM INT
+
+if [ -n "${MINIO_CLUSTER_ADDR}" ]; then
+    MINIO_HOST=$(echo "${MINIO_CLUSTER_ADDR}" | sed -r "s/^(http:\/\/)//" | sed -r "s/\/.*//")
+    MINIO_PATH=$(echo "${MINIO_CLUSTER_ADDR}" | sed -r "s/^(http:\/\/)//" | sed -r "s/${MINIO_HOST}//")
+    if [ -z "${MINIO_HOST}" -o -z "${MINIO_PATH}" ]; then
+        echo "Invalid value of follow environment variable MINIO_CLUSTER_ADDR"
+        exit 1
+    fi
+
+    i=1
+    while [ "$i" -le  10 ]; do
+        host "${MINIO_HOST}" > /dev/null
+        if [ $? -eq 0 ]; then
+            export MINIO_ENDPOINTS=$(host "${MINIO_HOST}" | cut -f4 -d" " | sed -e "s/$/\\${MINIO_PATH}/" | sed -e "s/^/http:\/\//" | xargs)
+            echo "Selected follow nodes: ${MINIO_ENDPOINTS}"
+
+"$@" 2>&1 &
+echo "$!" > /var/run/minio.pid
+wait $!
+rm /var/run/minio.pid
+
+RC=$?
+if [ "$RC" -eq 0 ]; then
+    exit $RC
+fi
+
+        else
+            echo "Sleep 50"
+            sleep 50
+        fi
+        i=$(( i + 1 ))
+    done
+    if [ -z "${ADDRS}" ]; then
+        echo "Could not find IPs"
+        echo $(host "$MINIO_HOST")
+        exit 1
+    fi
+fi
+
+exit 0
